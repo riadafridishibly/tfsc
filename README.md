@@ -2,6 +2,7 @@
 TFSC is a implementation of simple file server and client on top of python's socket library. It uses TCP protocol to communicate.
 
 # Usage
+Run the `server.py` and `client.py` in two different folders to avoid filename conflict.
 
 ## Running the server
 ```
