@@ -48,3 +48,10 @@ The first 2 bytes of the request is fixed. It's **16 bit unsigned int** in *netw
 | content-length | Length of the data after the header |
 | encoding | Encoding of the data. **utf-8, binary**|
 | filename | File name specified in **GET** or **PUT** request |
+
+## Methods
+| Method | Description |
+|---|---|
+| GET | Download a file from the server |
+| PUT | Upload a file to the server |
+| LIST | List the contents of the directory in which the server is running |
