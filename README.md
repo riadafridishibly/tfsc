@@ -1,5 +1,28 @@
 # Tiny File Server and Client
-TFSC is a implementation of simple file server and client on top of python socket library. It uses TCP protocol to communicate.
+TFSC is a implementation of simple file server and client on top of python's socket library. It uses TCP protocol to communicate.
+
+# Usage
+
+## Running the server
+```
+$ python server.py <port>
+```
+Example:
+```
+$ python server.py 9009
+```
+
+## Using the client
+```
+$ python client.py <host> <port> <request-type> <filename | only for GET and PUT request>
+```
+Example:
+```
+$ python client.py localhost 9009 GET README.md
+$ python client.py localhost 9009 LIST
+$ python client.py localhost 9009 PUT somefile
+```
+
 
 # Protocol Specification
 
