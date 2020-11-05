@@ -5,10 +5,23 @@ import struct
 import json
 import os
 import logging
+from typing import Tuple
 
 
-# https://stackoverflow.com/a/28950776
+class Status:
+    OK = 0
+    ERROR = 1
+
+
+class Method:
+    LIST = 'LIST'
+    GET = 'GET'
+    PUT = 'PUT'
+
+
 def get_router_assigned_ip():
+    # https://stackoverflow.com/a/28950776
+
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
             s.connect(('10.255.255.255', 1))
@@ -26,6 +39,7 @@ class Server:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.ip = self.ip_addr()
         self.configure_logger()
+        self.start()
 
     def ip_addr(self):
         addr = get_router_assigned_ip()
@@ -35,42 +49,121 @@ class Server:
             ipaddr = socket.gethostbyname(self.host)
         return ipaddr
 
+    # ------------------- utility -------------------
+    def read_from_socket(self, sock: socket.socket, size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            # this sock.recv() call can also fail
+            packet = sock.recv(size - len(data))
+            if not packet:
+                break
+            data.extend(packet)
+        return bytes(data)
+
+    def read_header(self, sock: socket.socket, addr: Tuple[str, int]) -> dict:
+        try:
+            size = struct.unpack('>H', sock.recv(2))[0]
+            data = self.read_from_socket(sock, size=size)
+            return json.loads(data)
+        except struct.error:
+            self.err_log('Could not extract the header', addr=addr)
+            return None
+
+    def generate_header(
+            self,
+            status: int,
+            content_length: int,
+            encoding: str = 'utf-8',
+            filename: str = None) -> bytes:
+        header = {
+            'status': status,
+            'content-length': content_length,
+            'encoding': encoding,
+        }
+        if filename:
+            header['filename'] = filename
+
+        encoded_header = json.dumps(header).encode('utf-8')
+        return struct.pack('>H', len(encoded_header)) + encoded_header
+
+    def send_error_msg(self, msg: str, sock: socket.socket):
+        encoded_msg = msg.encode('utf-8')
+        header = self.generate_header(
+            status=1,
+            content_length=len(encoded_msg),
+            encoding='utf-8'
+        )
+        # this call can fail
+        sock.sendall(header + encoded_msg)
+
+    # ------------------ handlers -------------------
+    def list_handler(self, sock: socket.socket, addr: Tuple[str, int]):
+        files = (f for f in os.listdir(b'.') if os.path.isfile(f))
+        data = b'\n'.join(files)
+        header = self.generate_header(
+            status=Status.OK, content_length=len(data))
+        sock.sendall(header + data)
+        self.info_log(f"{'LIST'} - OK - ", addr=addr)
+
+    def get_handler(self, sock: socket.socket, addr: Tuple[str, int]):
+        pass
+
+    def put_handler(self, sock: socket.socket, addr: Tuple[str, int]):
+        pass
+
+    # ------------------- logging -------------------
     def configure_logger(self):
-        self.logger = logging.getLogger(Server.__name__)
-        self.logger.setLevel(logging.DEBUG)
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.DEBUG)
-        # TODO: add client ip and port to the formatter (extra parameter)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        ch.setFormatter(formatter)
-        self.logger.addHandler(ch)
+        TIME_FORMAT = "%d/%b/%y %H:%M:%S"
+        FORMAT = '%(clientaddr)s - %(asctime)-15s - %(message)s'
+        logging.basicConfig(format=FORMAT, datefmt=TIME_FORMAT)
+        self.logger = logging.getLogger(type(self).__name__.lower())
+        self.logger.setLevel(logging.INFO)
+
+    def client_info(self, addr):
+        return {'clientaddr': addr[0] + ':' + str(addr[1])}
+
+    def err_log(self, msg, addr):
+        self.logger.error(msg, extra=self.client_info(addr))
+
+    def info_log(self, msg, addr):
+        self.logger.info(msg, extra=self.client_info(addr))
+
+    # ------------------- control -------------------
+    def start(self):
+        self.sock.bind((self.host, self.port))
+        self.sock.listen()
+        print(f'Server up and running at {self.ip}:{self.port} ...')
 
     def run(self):
         try:
             while True:
                 conn, addr = self.sock.accept()
                 with conn:
-                    while True:
-                        # TODO: Handle the case when client disconnects
-                        data = conn.recv(1024)
-                        conn.sendall(b'Response: ' + data)
+                    header = self.read_header(conn, addr)
+                    if header:
+                        if header.get('method') == Method.LIST:
+                            self.list_handler(conn, addr)
+                    else:
+                        self.send_error_msg(
+                            'send request with a header, see documentation.', conn)
 
         except KeyboardInterrupt:
             print('\nExiting...')
 
+    def close(self):
+        self.sock.close()
+
     def __enter__(self):
-        self.sock.bind((self.host, self.port))
-        self.sock.listen()
-        print(f'Server up and running at {self.ip}:{self.port} ...')
         return self
 
     def __exit__(self, exc_type, exc_value, exc_tb):
-        self.sock.close()
+        self.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('port', help='Port in which the server is running', type=int)
+    parser.add_argument(
+        'port', help='Port in which the server is running', type=int)
     args = parser.parse_args()
 
     with Server(host='', port=args.port) as server:
