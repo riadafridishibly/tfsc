@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse
 import socket
 import sys
@@ -5,7 +7,11 @@ import struct
 import json
 import os
 import logging
-from typing import Tuple
+from typing import Tuple, Optional, Dict, Any
+
+AddrType = Tuple[str, int]
+
+BUFFER_SIZE = 65535
 
 
 class Status:
@@ -19,7 +25,7 @@ class Method:
     PUT = 'PUT'
 
 
-def get_router_assigned_ip():
+def get_router_assigned_ip() -> Optional[str]:
     # https://stackoverflow.com/a/28950776
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -29,6 +35,14 @@ def get_router_assigned_ip():
         except:
             ip = None
     return ip
+
+
+def secure_filename(filename: str) -> str:
+    for sep in os.path.sep, os.path.altsep:
+        if sep:
+            filename = filename.replace(sep, ' ')
+            filename = '_'.join(filename.split()).strip('_.')
+    return filename
 
 
 class Server:
@@ -41,7 +55,7 @@ class Server:
         self.configure_logger()
         self.start()
 
-    def ip_addr(self):
+    def ip_addr(self) -> str:
         addr = get_router_assigned_ip()
         if addr:
             ipaddr = addr
@@ -60,7 +74,7 @@ class Server:
             data.extend(packet)
         return bytes(data)
 
-    def read_header(self, sock: socket.socket, addr: Tuple[str, int]) -> dict:
+    def read_header(self, sock: socket.socket, addr: AddrType) -> Optional[dict]:
         try:
             size = struct.unpack('>H', sock.recv(2))[0]
             data = self.read_from_socket(sock, size=size)
@@ -97,7 +111,7 @@ class Server:
         sock.sendall(header + encoded_msg)
 
     # ------------------ handlers -------------------
-    def list_handler(self, sock: socket.socket, addr: Tuple[str, int]):
+    def list_handler(self, sock: socket.socket, addr: AddrType):
         files = (f for f in os.listdir(b'.') if os.path.isfile(f))
         data = b'\n'.join(files)
         header = self.generate_header(
@@ -105,10 +119,31 @@ class Server:
         sock.sendall(header + data)
         self.info_log(f"{'LIST'} - OK - ", addr=addr)
 
-    def get_handler(self, sock: socket.socket, addr: Tuple[str, int]):
-        pass
+    def get_handler(self, sock: socket.socket, addr: AddrType, header: dict):
+        filename = secure_filename(str(header.get('filename')))
 
-    def put_handler(self, sock: socket.socket, addr: Tuple[str, int]):
+        if os.path.isfile(filename):
+            file_len = os.path.getsize(filename)
+            response_header = self.generate_header(
+                status=Status.OK, content_length=file_len, encoding='binary', filename=filename)
+            sock.sendall(response_header)
+
+            with open(filename, 'rb') as f:
+                while file_len > 0:
+                    data = f.read(BUFFER_SIZE)
+                    if not data:
+                        break
+                    sock.sendall(data)
+                    file_len -= len(data)
+
+            self.info_log(f"{'GET'} {filename} - OK -", addr=addr)
+
+        else:
+            self.send_error_msg(f'File not found "{filename}"', sock)
+            self.err_log(f"{'GET'} - Error - File not found", addr=addr)
+
+
+    def put_handler(self, sock: socket.socket, addr: Tuple[str, int], header: dict):
         pass
 
     # ------------------- logging -------------------
@@ -143,6 +178,12 @@ class Server:
                     if header:
                         if header.get('method') == Method.LIST:
                             self.list_handler(conn, addr)
+                        elif header.get('method') == Method.GET:
+                            self.get_handler(conn, addr, header)
+                        elif header.get('method') == Method.PUT:
+                            self.put_handler(conn, addr, header)
+                        else:
+                            self.err_log('Method Unknown', addr=addr)
                     else:
                         self.send_error_msg(
                             'send request with a header, see documentation.', conn)
