@@ -133,8 +133,12 @@ class Server:
                     data = f.read(BUFFER_SIZE)
                     if not data:
                         break
-                    sock.sendall(data)
-                    file_len -= len(data)
+                    try:
+                        sock.sendall(data)
+                        file_len -= len(data)
+                    except ConnectionResetError:
+                        self.info_log(f"{'GET'} {filename} - Error - Client Disconnected", addr=addr)
+                        return
 
             self.info_log(f"{'GET'} {filename} - OK -", addr=addr)
 

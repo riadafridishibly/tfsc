@@ -6,6 +6,11 @@ import sys
 import json
 import argparse
 import os
+from typing import Tuple, Optional, Dict, Any
+
+AddrType = Tuple[str, int]
+
+BUFFER_SIZE = 65535
 
 
 class Status:
@@ -19,23 +24,37 @@ class Method:
     PUT = 'PUT'
 
 
-# Generate HEADER for each request
+class HeaderField:
+    STATUS = 'status'
+    METHOD = 'method'
+    CONTENT_LEN = 'content-length'
+    ENCODING = 'encoding'
+    FILENAME = 'filename'
+
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
 def generate_header(
-        content_length: int,
         method: str,
-        filename: str = '',
-        encoding: str = 'utf-8') -> bytes:
-    header = {}
-    header['content-length'] = content_length
-    header['encoding'] = encoding
-    header['method'] = method
-    if method != 'list':
-        header['filename'] = filename
-    dumped_header = json.dumps(header).encode('utf-8')
-    return struct.pack('>H', len(dumped_header)) + dumped_header
+        content_length: int = 0,
+        encoding: str = 'utf-8',
+        filename: str = None) -> bytes:
+    header = {
+        HeaderField.METHOD: method,
+        HeaderField.ENCODING: encoding,
+    }
+
+    if content_length:
+        header[HeaderField.CONTENT_LEN] = content_length
+    if filename:
+        header[HeaderField.FILENAME] = filename
+
+    encoded_header = json.dumps(header).encode('utf-8')
+    return struct.pack('>H', len(encoded_header)) + encoded_header
 
 
-# Read from socket and returns byte
 def read_from_socket(sock: socket.socket, size: int) -> bytes:
     data = bytearray()
     while len(data) < size:
@@ -45,65 +64,62 @@ def read_from_socket(sock: socket.socket, size: int) -> bytes:
         data.extend(packet)
     return bytes(data)
 
-# Read header returned from server
 
-
-def read_header(sock) -> dict:
-    raw_size = sock.recv(2)
-    if not raw_size:
-        print('Read failed from', addr)
-    size = struct.unpack('>H', raw_size)[0]
-    data = read_from_socket(sock, size)
-    return json.loads(data)
-
-
-# Handle the list command
-
-
-def handle_list(sock):
-    header = generate_header(content_length=0, method='LIST')
-    sock.sendall(header)
-
-    received_header = read_header(sock)
-    content_len = received_header.get('content-length')
-
-    data = read_from_socket(sock, content_len)
-    print(data.decode(received_header.get('encoding')))
-
-# Handle the get command
-
-
-def handle_get(sock, filename):
-    header = generate_header(
-        content_length=0, method='GET', filename=filename, encoding='binary')
-    sock.sendall(header)
-
-    received_header = read_header(sock)
-    status = received_header.get('status')
-    content_len = received_header.get('content-length')
-
-    # print(received_header)
-    if status != 0:
-        data = read_from_socket(sock, content_len).decode(
-            received_header.get('encoding'))
-        print(data, file=sys.stderr)
+def read_header(sock: socket.socket) -> Optional[dict]:
+    try:
+        size = struct.unpack('>H', sock.recv(2))[0]
+        data = read_from_socket(sock, size=size)
+        return json.loads(data)
+    except struct.error:
         return None
 
-    filename = received_header.get('filename')
 
-    # if os.path.isfile(filename):
-    #     print('File Exists:', filename)
-    #     return None
+def handle_list(sock: socket.socket):
+    # send request
+    header = generate_header(method=Method.LIST)
+    sock.sendall(header)
+
+    # recieve response
+    received_header = read_header(sock)
+    content_len = received_header.get(HeaderField.CONTENT_LEN)
+    data = read_from_socket(sock, content_len)
+    print(data.decode(received_header.get(HeaderField.ENCODING)))
+
+
+def handle_get(sock: socket.socket, filename: str):
+    # send request
+    header = generate_header(
+        method=Method.GET, encoding='binary', filename=filename)
+    sock.sendall(header)
+
+    # recieve response
+    received_header = read_header(sock)
+    status = received_header.get(HeaderField.STATUS)
+    content_len = received_header.get(HeaderField.CONTENT_LEN)
+
+    # handle server side error, can't get the file, exit
+    if status != Status.OK:
+        data = read_from_socket(sock, content_len).decode(
+            received_header.get(HeaderField.ENCODING))
+        eprint(data)
+        return None
+
+    # server is sending the file
+    filename = received_header.get(HeaderField.FILENAME)
+
+    # whether you should override the existing file
+    # I don't know yet whether it's the correct approach to this problem
+    if os.path.isfile(filename):
+        eprint('File Exists:', filename)
+        return None
 
     n = 0
     with open(filename, 'wb') as f:
         while n < content_len:
-            data = sock.recv(4096)
+            data = sock.recv(BUFFER_SIZE)
             if not data:
                 break
             n += f.write(data)
-
-# Handle the put command
 
 
 def handle_put(sock, filename):
@@ -168,4 +184,3 @@ if __name__ == '__main__':
             handle_get(s, args.filename)
         elif args.method.upper() == Method.PUT:
             handle_put(s, args.filename)
-
