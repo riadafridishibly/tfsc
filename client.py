@@ -126,21 +126,21 @@ def handle_put(sock, filename):
     try:
         stat = os.stat(filename)
         header = generate_header(
-            content_length=stat.st_size, method='put', filename=filename, encoding='binary')
+            method=Method.PUT, content_length=stat.st_size, encoding='binary', filename=filename)
         sock.sendall(header)
 
         header = read_header(sock)
 
-        if header.get('status') != 0:
-            message = read_from_socket(sock, header.get(
-                'content-length')).decode(header.get('encoding'))
+        if header.get(HeaderField.STATUS) != Status.OK:
+            message = read_from_socket(sock, header.get(HeaderField.CONTENT_LEN)).decode(
+                header.get(HeaderField.ENCODING))
             print(message)
             return None
 
         with open(filename, 'rb') as f:
             file_len = stat.st_size
             while file_len > 0:
-                data = f.read(4096)
+                data = f.read(BUFFER_SIZE)
                 if not data:
                     break
                 sock.send(data)

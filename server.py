@@ -100,15 +100,17 @@ class Server:
         encoded_header = json.dumps(header).encode('utf-8')
         return struct.pack('>H', len(encoded_header)) + encoded_header
 
-    def send_error_msg(self, msg: str, sock: socket.socket):
+    def send_error_msg(self, msg: str, sock: socket.socket, addr: AddrType):
         encoded_msg = msg.encode('utf-8')
         header = self.generate_header(
-            status=1,
+            status=Status.ERROR,
             content_length=len(encoded_msg),
             encoding='utf-8'
         )
-        # this call can fail
-        sock.sendall(header + encoded_msg)
+        try:
+            sock.sendall(header + encoded_msg)
+        except Exception as e:
+            self.err_log(str(e), addr=addr)
 
     # ------------------ handlers -------------------
     def list_handler(self, sock: socket.socket, addr: AddrType):
@@ -116,8 +118,12 @@ class Server:
         data = b'\n'.join(files)
         header = self.generate_header(
             status=Status.OK, content_length=len(data))
-        sock.sendall(header + data)
-        self.info_log(f"{'LIST'} - OK - ", addr=addr)
+
+        try:
+            sock.sendall(header + data)
+            self.info_log(f"{'LIST'} - OK - ", addr=addr)
+        except Exception as e:
+            self.err_log(str(e), addr=addr)
 
     def get_handler(self, sock: socket.socket, addr: AddrType, header: dict):
         filename = secure_filename(str(header.get('filename')))
@@ -137,18 +143,45 @@ class Server:
                         sock.sendall(data)
                         file_len -= len(data)
                     except ConnectionResetError:
-                        self.info_log(f"{'GET'} {filename} - Error - Client Disconnected", addr=addr)
+                        self.info_log(
+                            f"{'GET'} {filename} - Error - Client Disconnected", addr=addr)
                         return
 
             self.info_log(f"{'GET'} {filename} - OK -", addr=addr)
 
         else:
-            self.send_error_msg(f'File not found "{filename}"', sock)
+            self.send_error_msg(f'File not found "{filename}"', sock, addr)
             self.err_log(f"{'GET'} - Error - File not found", addr=addr)
 
-
     def put_handler(self, sock: socket.socket, addr: Tuple[str, int], header: dict):
-        pass
+        filename = secure_filename(header.get('filename'))
+
+        if os.path.exists(filename):
+            message = f'File Exists: "{filename}"'
+            self.send_error_msg(message, sock, addr)
+            self.err_log(f"PUT - Error - {message}", addr=addr)
+            return
+
+        success_header = self.generate_header(status=Status.OK, content_length=0)
+        # this call can fail
+        sock.sendall(success_header)
+
+        content_len = header.get('content-length')
+
+        if content_len == 0:
+            self.err_log('Ignoring zero sized file', addr=addr)
+            return None
+
+        n = 0
+        with open(filename, 'wb') as f:
+            while n < content_len:
+                data = sock.recv(BUFFER_SIZE)
+                if not data:
+                    break
+                n += f.write(data)
+
+        self.info_log(f"{'PUT'} {filename} - OK -", addr=addr)
+
 
     # ------------------- logging -------------------
     def configure_logger(self):
@@ -190,7 +223,7 @@ class Server:
                             self.err_log('Method Unknown', addr=addr)
                     else:
                         self.send_error_msg(
-                            'send request with a header, see documentation.', conn)
+                            'send request with a header, see documentation.', conn, addr)
 
         except KeyboardInterrupt:
             print('\nExiting...')
